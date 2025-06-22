@@ -82,15 +82,32 @@ class PoseAnalyzer:
     def create_skeleton_overlay_video(self, frames, pose_results, output_path):
         """骨格重畳表示動画を作成"""
         if not frames or not pose_results:
+            print("DEBUG: No frames or pose_results provided")
             return None
             
         height, width = frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, 30.0, (width, height))
+        print(f"DEBUG: Video dimensions: {width}x{height}")
+        print(f"DEBUG: Total frames: {len(frames)}, Total pose results: {len(pose_results)}")
         
-        for frame, results in zip(frames, pose_results):
+        temp_output_path = output_path.replace('.mp4', '_temp.mp4')
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(temp_output_path, fourcc, 30.0, (width, height))
+        
+        if not out.isOpened():
+            print("DEBUG: mp4v codec failed, trying XVID codec")
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            out = cv2.VideoWriter(temp_output_path, fourcc, 30.0, (width, height))
+            
+            if not out.isOpened():
+                print("DEBUG: XVID codec failed, trying H264 codec")
+                fourcc = cv2.VideoWriter_fourcc(*'H264')
+                out = cv2.VideoWriter(temp_output_path, fourcc, 30.0, (width, height))
+        
+        landmarks_found = 0
+        for i, (frame, results) in enumerate(zip(frames, pose_results)):
             overlay_frame = frame.copy()
             if results.pose_landmarks:
+                landmarks_found += 1
                 mp_drawing.draw_landmarks(
                     overlay_frame,
                     results.pose_landmarks,
@@ -100,6 +117,29 @@ class PoseAnalyzer:
             out.write(overlay_frame)
         
         out.release()
+        print(f"DEBUG: Landmarks found in {landmarks_found}/{len(frames)} frames")
+        print(f"DEBUG: Temporary video saved to: {temp_output_path}")
+        
+        import subprocess
+        try:
+            cmd = [
+                'ffmpeg', '-i', temp_output_path,
+                '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+                '-movflags', '+faststart',
+                output_path, '-y'
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"DEBUG: Browser-compatible video created: {output_path}")
+                os.remove(temp_output_path)
+            else:
+                print(f"DEBUG: FFmpeg conversion failed: {result.stderr}")
+                os.rename(temp_output_path, output_path)
+        except Exception as e:
+            print(f"DEBUG: FFmpeg not available, using original file: {e}")
+            os.rename(temp_output_path, output_path)
+        
+        print(f"DEBUG: Final output video saved to: {output_path}")
         return output_path
     
     def calculate_joint_similarities(self, teacher_poses, student_poses, joint_group="全体"):
@@ -219,14 +259,19 @@ def main():
             if st.checkbox("骨格重畳表示", key="teacher_overlay"):
                 if 'teacher_poses' in st.session_state:
                     with st.spinner("骨格重畳表示動画を作成中..."):
-                        overlay_path = tempfile.mktemp(suffix='_teacher_overlay.mp4')
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='_teacher_overlay.mp4') as tmp_file:
+                            overlay_path = tmp_file.name
                         result_path = analyzer.create_skeleton_overlay_video(
                             st.session_state.teacher_frames,
                             st.session_state.teacher_pose_results,
                             overlay_path
                         )
-                        if result_path:
-                            st.video(result_path)
+                        if result_path and os.path.exists(result_path):
+                            import shutil
+                            import time
+                            accessible_path = f"overlay_{int(time.time())}.mp4"
+                            shutil.copy2(result_path, accessible_path)
+                            st.video(accessible_path)
                             st.success("骨格重畳表示完了！")
                         else:
                             st.error("骨格重畳表示の作成に失敗しました")
@@ -254,14 +299,19 @@ def main():
             if st.checkbox("骨格重畳表示", key="student_overlay"):
                 if 'student_poses' in st.session_state:
                     with st.spinner("骨格重畳表示動画を作成中..."):
-                        overlay_path = tempfile.mktemp(suffix='_student_overlay.mp4')
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='_student_overlay.mp4') as tmp_file:
+                            overlay_path = tmp_file.name
                         result_path = analyzer.create_skeleton_overlay_video(
                             st.session_state.student_frames,
                             st.session_state.student_pose_results,
                             overlay_path
                         )
-                        if result_path:
-                            st.video(result_path)
+                        if result_path and os.path.exists(result_path):
+                            import shutil
+                            import time
+                            accessible_path = f"overlay_{int(time.time())}.mp4"
+                            shutil.copy2(result_path, accessible_path)
+                            st.video(accessible_path)
                             st.success("骨格重畳表示完了！")
                         else:
                             st.error("骨格重畳表示の作成に失敗しました")
