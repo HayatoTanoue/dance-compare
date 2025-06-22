@@ -36,6 +36,62 @@ class PoseAnalyzer:
             "右脚": [24, 26, 28, 30, 32]   # 右腰から右足まで
         }
     
+    def create_enhanced_progress_bar(self, current, total, task_name):
+        """Create enhanced progress bar with visual styling"""
+        progress = current / total if total > 0 else 0
+        progress_html = f"""
+        <div style="background: #f0f0f0; border-radius: 10px; padding: 15px; margin: 10px 0;">
+            <div style="background: linear-gradient(90deg, #4CAF50, #45a049); 
+                        width: {progress*100}%; height: 25px; border-radius: 10px; 
+                        transition: width 0.3s ease;">
+            </div>
+            <p style="text-align: center; margin-top: 10px; font-weight: bold; color: #333;">
+                {task_name}: {current}/{total} ({progress*100:.1f}%)
+            </p>
+        </div>
+        """
+        return progress_html
+
+    def extract_poses_with_progress(self, video_path):
+        """Enhanced pose extraction with progress tracking"""
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        poses = []
+        frames = []
+        pose_results = []
+        frame_count = 0
+        
+        progress_placeholder = st.empty()
+        
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.pose.process(rgb_frame)
+            
+            frames.append(frame.copy())
+            pose_results.append(results)
+            
+            if results.pose_landmarks:
+                landmarks = []
+                for landmark in results.pose_landmarks.landmark:
+                    landmarks.extend([landmark.x, landmark.y, landmark.z, landmark.visibility])
+                poses.append(landmarks)
+            else:
+                poses.append([0] * (33 * 4))
+            
+            frame_count += 1
+            
+            if frame_count % 10 == 0 or frame_count == total_frames:
+                progress_html = self.create_enhanced_progress_bar(frame_count, total_frames, "骨格推定処理")
+                progress_placeholder.markdown(progress_html, unsafe_allow_html=True)
+        
+        cap.release()
+        progress_placeholder.empty()
+        return np.array(poses), frame_count, frames, pose_results
+
     def extract_poses(self, video_path):
         """動画から骨格情報を抽出"""
         cap = cv2.VideoCapture(video_path)
@@ -209,6 +265,76 @@ class PoseAnalyzer:
         )
         
         return fig
+    
+    def create_3d_skeleton_view(self, poses, frame_idx=0, title="3D骨格表示"):
+        """Create 3D skeleton visualization using Plotly"""
+        if len(poses) == 0 or frame_idx >= len(poses):
+            return None
+            
+        pose_data = np.array(poses[frame_idx]).reshape(33, 4)
+        
+        x_coords = pose_data[:, 0]
+        y_coords = pose_data[:, 1] 
+        z_coords = pose_data[:, 2]
+        visibility = pose_data[:, 3]
+        
+        visible_mask = visibility > 0.5
+        
+        fig = go.Figure()
+        
+        fig.add_trace(go.Scatter3d(
+            x=x_coords[visible_mask],
+            y=y_coords[visible_mask],
+            z=z_coords[visible_mask],
+            mode='markers',
+            marker=dict(
+                size=8,
+                color=z_coords[visible_mask],
+                colorscale='Viridis',
+                showscale=True,
+                colorbar=dict(title="深度")
+            ),
+            name='関節点',
+            text=[f'関節{i}' for i in range(33) if visible_mask[i]],
+            hovertemplate='%{text}<br>X: %{x:.3f}<br>Y: %{y:.3f}<br>Z: %{z:.3f}<extra></extra>'
+        ))
+        
+        connections = [
+            (11, 12), (11, 13), (13, 15), (15, 17), (17, 19), (19, 21),
+            (12, 14), (14, 16), (16, 18), (18, 20), (20, 22),
+            (11, 23), (12, 24), (23, 24),
+            (23, 25), (25, 27), (27, 29), (29, 31),
+            (24, 26), (26, 28), (28, 30), (30, 32),
+        ]
+        
+        for start_idx, end_idx in connections:
+            if visible_mask[start_idx] and visible_mask[end_idx]:
+                fig.add_trace(go.Scatter3d(
+                    x=[x_coords[start_idx], x_coords[end_idx]],
+                    y=[y_coords[start_idx], y_coords[end_idx]],
+                    z=[z_coords[start_idx], z_coords[end_idx]],
+                    mode='lines',
+                    line=dict(color='white', width=4),
+                    showlegend=False,
+                    hoverinfo='skip'
+                ))
+        
+        fig.update_layout(
+            title=title,
+            scene=dict(
+                xaxis_title='X座標',
+                yaxis_title='Y座標', 
+                zaxis_title='Z座標',
+                bgcolor='rgb(240, 240, 240)',
+                camera=dict(
+                    eye=dict(x=1.5, y=1.5, z=1.5)
+                )
+            ),
+            height=500,
+            margin=dict(l=0, r=0, t=50, b=0)
+        )
+        
+        return fig
 
 def main():
     st.set_page_config(
@@ -217,8 +343,53 @@ def main():
         layout="wide"
     )
     
-    st.title("💃 Dance Compare")
-    st.markdown("ダンスの練習が一人でできるようなインターフェースと解析機能")
+    st.markdown("""
+    <style>
+    .main-header {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 15px;
+        color: white;
+        text-align: center;
+        margin-bottom: 2rem;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+    .video-container {
+        border: 2px solid #e1e5e9;
+        border-radius: 15px;
+        padding: 1.5rem;
+        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+        margin-bottom: 1rem;
+    }
+    .score-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 1.5rem;
+        border-radius: 15px;
+        text-align: center;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    }
+    .enhanced-button {
+        background: linear-gradient(90deg, #4CAF50 0%, #45a049 100%);
+        color: white;
+        border: none;
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-weight: bold;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    }
+    .sync-controls {
+        background: #f8f9fa;
+        border-radius: 10px;
+        padding: 1rem;
+        border: 1px solid #dee2e6;
+        margin: 1rem 0;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.markdown('<div class="main-header"><h1>💃 Dance Compare</h1><p>ダンスの練習が一人でできるようなインターフェースと解析機能</p></div>', unsafe_allow_html=True)
     
     st.sidebar.header("動画アップロード")
     
@@ -239,6 +410,7 @@ def main():
     analyzer = PoseAnalyzer()
     
     with col1:
+        st.markdown('<div class="video-container">', unsafe_allow_html=True)
         st.header("教師動画")
         if teacher_video is not None:
             with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
@@ -248,13 +420,12 @@ def main():
             st.video(teacher_path)
             
             if st.button("教師動画の骨格推定を実行", key="teacher_analyze"):
-                with st.spinner("骨格推定中..."):
-                    poses, frame_count, frames, pose_results = analyzer.extract_poses(teacher_path)
-                    st.session_state.teacher_poses = poses
-                    st.session_state.teacher_frame_count = frame_count
-                    st.session_state.teacher_frames = frames
-                    st.session_state.teacher_pose_results = pose_results
-                    st.success(f"骨格推定完了！ {frame_count}フレーム処理しました")
+                poses, frame_count, frames, pose_results = analyzer.extract_poses_with_progress(teacher_path)
+                st.session_state.teacher_poses = poses
+                st.session_state.teacher_frame_count = frame_count
+                st.session_state.teacher_frames = frames
+                st.session_state.teacher_pose_results = pose_results
+                st.success(f"骨格推定完了！ {frame_count}フレーム処理しました")
             
             if st.checkbox("骨格重畳表示", key="teacher_overlay"):
                 if 'teacher_poses' in st.session_state:
@@ -277,8 +448,10 @@ def main():
                             st.error("骨格重畳表示の作成に失敗しました")
                 else:
                     st.warning("まず骨格推定を実行してください")
+        st.markdown('</div>', unsafe_allow_html=True)
     
     with col2:
+        st.markdown('<div class="video-container">', unsafe_allow_html=True)
         st.header("生徒動画")
         if student_video is not None:
             with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
@@ -288,13 +461,12 @@ def main():
             st.video(student_path)
             
             if st.button("生徒動画の骨格推定を実行", key="student_analyze"):
-                with st.spinner("骨格推定中..."):
-                    poses, frame_count, frames, pose_results = analyzer.extract_poses(student_path)
-                    st.session_state.student_poses = poses
-                    st.session_state.student_frame_count = frame_count
-                    st.session_state.student_frames = frames
-                    st.session_state.student_pose_results = pose_results
-                    st.success(f"骨格推定完了！ {frame_count}フレーム処理しました")
+                poses, frame_count, frames, pose_results = analyzer.extract_poses_with_progress(student_path)
+                st.session_state.student_poses = poses
+                st.session_state.student_frame_count = frame_count
+                st.session_state.student_frames = frames
+                st.session_state.student_pose_results = pose_results
+                st.success(f"骨格推定完了！ {frame_count}フレーム処理しました")
             
             if st.checkbox("骨格重畳表示", key="student_overlay"):
                 if 'student_poses' in st.session_state:
@@ -317,11 +489,52 @@ def main():
                             st.error("骨格重畳表示の作成に失敗しました")
                 else:
                     st.warning("まず骨格推定を実行してください")
+        st.markdown('</div>', unsafe_allow_html=True)
     
     st.header("比較分析")
     
     if ('teacher_poses' in st.session_state and 
         'student_poses' in st.session_state):
+        
+        st.markdown('<div class="sync-controls">', unsafe_allow_html=True)
+        st.subheader("🎮 同期再生コントロール")
+        
+        sync_col1, sync_col2, sync_col3 = st.columns([1, 2, 1])
+        
+        with sync_col1:
+            if st.button("⏯️ 同期再生", key="sync_play"):
+                st.session_state.sync_playing = not st.session_state.get('sync_playing', False)
+                if st.session_state.sync_playing:
+                    st.session_state.sync_start_time = time.time()
+        
+        with sync_col2:
+            max_duration = max(
+                st.session_state.teacher_frame_count / 30,
+                st.session_state.student_frame_count / 30
+            )
+            sync_position = st.slider(
+                "再生位置 (秒)", 
+                0.0, max_duration, 
+                st.session_state.get('sync_position', 0.0), 
+                0.1,
+                key="sync_position_slider"
+            )
+            st.session_state.sync_position = sync_position
+        
+        with sync_col3:
+            playback_speed = st.selectbox(
+                "再生速度", 
+                [0.5, 0.75, 1.0, 1.25, 1.5, 2.0], 
+                index=2,
+                key="playback_speed"
+            )
+        
+        if st.session_state.get('sync_playing', False):
+            st.success(f"🎵 同期再生中 - 位置: {sync_position:.1f}秒 - 速度: {playback_speed}x")
+        else:
+            st.info("⏸️ 一時停止中")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
         
         col3, col4 = st.columns(2)
         
@@ -420,6 +633,24 @@ def main():
                         )
                         
                         st.plotly_chart(progress_fig, use_container_width=True)
+                        
+                        st.subheader("🎯 3D骨格比較")
+                        
+                        col_3d1, col_3d2 = st.columns(2)
+                        
+                        with col_3d1:
+                            st.markdown("**教師動画 - 3D骨格**")
+                            frame_idx = st.slider("教師フレーム選択", 0, len(teacher_sync)-1, 0, key="teacher_3d_frame")
+                            teacher_3d_fig = analyzer.create_3d_skeleton_view(teacher_sync, frame_idx, "教師 - 3D骨格")
+                            if teacher_3d_fig:
+                                st.plotly_chart(teacher_3d_fig, use_container_width=True)
+                        
+                        with col_3d2:
+                            st.markdown("**生徒動画 - 3D骨格**")
+                            frame_idx_student = st.slider("生徒フレーム選択", 0, len(student_sync)-1, 0, key="student_3d_frame")
+                            student_3d_fig = analyzer.create_3d_skeleton_view(student_sync, frame_idx_student, "生徒 - 3D骨格")
+                            if student_3d_fig:
+                                st.plotly_chart(student_3d_fig, use_container_width=True)
                         
                         st.subheader("📋 分析サマリー")
                         
